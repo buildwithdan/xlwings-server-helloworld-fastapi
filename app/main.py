@@ -70,7 +70,7 @@ async def hello(book: Book):
     return book.json()
 
 @app.post("/yellow")
-async def yellow(book: Book):
+async def gs_yellow(book: Book):
     """
     Highlights the currently selected cells in Excel in yellow.
     """
@@ -156,12 +156,60 @@ def upsert_to_azure(df, table_name, primary_key):
 
 # Example usage
 
-@app.post("/download_data")
-async def download_data(book: Book):
-    """
-    Endpoint to download data from Azure SQL as a pandas DataFrame.
-    """
+@app.post("/clear")
+async def clear_data(book: Book):
+    try:
+        # Access the active sheet
+        active_sheet = book.sheets.active
+        
+        # Debugging statements
+        print("Book object:", book)
+        print("Active sheet:", active_sheet.name)
+
+        # Validate the range and clear it
+        range_to_clear = active_sheet.range("A5:ZZ1000")
+        print("Range to clear:", range_to_clear.address)
+        range_to_clear.clear_contents()
+        
+        print("Range cleared successfully.")
+        return book.json()
+
+    except Exception as e:
+        # Detailed error message for debugging
+        error_message = f"Error clearing data: {e}"
+        print(error_message)
+        return PlainTextResponse(error_message, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
+@app.post("/get/journals")
+async def download_data(book: Book):
+    try:
+        
+        # Fetch data from Azure SQL
+        engine = get_db_engine()
+        with engine.connect() as connection:
+            query = "SELECT * FROM xero_jointfinances.vw_TB_journals"
+            df = pd.read_sql(query, connection)
+
+        # Convert DataFrame to dictionary for API response
+        data = df.to_dict(orient="records")
+        
+        active_sheet = book.sheets.active
+        active_sheet['A1'].value = df
+        return book.json()
+
+    except Exception as e:
+        return PlainTextResponse(
+            f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@app.post("/select_range")
+async def download_data(book: Book):
+    active_sheet = book.sheets.active
+    print(active_sheet.range)
+
+@app.post("/sheet_to_sql")
+async def download_data(book: Book):
     try:
         
         # Fetch data from Azure SQL
@@ -175,16 +223,56 @@ async def download_data(book: Book):
         
         active_sheet = book.sheets.active
         active_sheet['A5'].value = df
-        
         return book.json()
-   
+
     except Exception as e:
         return PlainTextResponse(
             f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
-
         
 
+@app.post("/sql_to_table")
+async def download_data(book: Book):
+    try:
+        # Fetch data from Azure SQL
+        engine = get_db_engine()
+        with engine.connect() as connection:
+            query = "SELECT * FROM xero_jointfinances.vw_accounts"
+            df = pd.read_sql(query, connection)
+
+        # Validate DataFrame
+        if df.empty:
+            raise ValueError("DataFrame is empty. Cannot populate Google Sheets table.")
+
+        # Define range parameters
+        start_row = 4  # Zero-based row for cell A5 (row 5 in human terms)
+        start_column = 0  # Zero-based column for cell A5 (column A in human terms)
+        row_count = df.shape[0]
+        column_count = df.shape[1]
+
+        # Create payload for Google Apps Script
+        action = {
+            "func": "addTable",
+            "args": ["$A$5", True, "TableStyleMedium2", "DataTable"],
+            "values": df.values.tolist(),  # Convert DataFrame to list of lists
+            "sheet_position": book.sheets.active.index,
+            "start_row": start_row,
+            "start_column": start_column,
+            "row_count": row_count,
+            "column_count": column_count,
+        }
+
+        print("Payload:", action)  # Debugging log
+
+        # Pass the payload to Google Apps Script
+        return book.json()
+
+    except Exception as e:
+        return PlainTextResponse(
+            f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )   
+        
+        
 @app.exception_handler(Exception)
 async def exception_handler(request, exception):
     # Handle all exceptions

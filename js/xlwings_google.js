@@ -41,7 +41,7 @@ function runPython(
   url,
   { auth = "", apiKey = "", include = "", exclude = "", headers = {} } = {}
 ) {
-  const version = "0.30.12";
+  const version = "0.33.4";
   const workbook = SpreadsheetApp.getActive();
   const sheets = workbook.getSheets();
 
