@@ -10,7 +10,7 @@ services:
         --reload
         --reload-dir /app
     ports:
-      - "8000:8000"
+      - "3000:8000"
     volumes:
       - ./app:/app
     env_file:

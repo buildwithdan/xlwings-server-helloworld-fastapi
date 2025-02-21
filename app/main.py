@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 import os
 
 import xlwings as xw
-from fastapi import Depends, FastAPI, status
+from fastapi import Depends, FastAPI, status, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import create_engine, Engine
@@ -11,9 +11,10 @@ from sqlalchemy.engine import URL
 import pandas as pd
 
 
+
 app = FastAPI()
 
-# Load .env file
+# Load .env file..
 load_dotenv(override=True)  # Forces `.env` variables to overwrite existing ones.
 
 # Access environment variables
@@ -25,6 +26,9 @@ sql_port = os.getenv("SQL_PORT")
 secret_key = os.getenv("XLWINGS_SECRET_KEY")
 
 # CONNECTION_STRING = f"mssql+pyodbc://{sql_user}:{sql_password}@{sql_server}/{sql_database}?driver=ODBC+Driver+17+for+SQL+Server"
+
+# This is the type annotation that we're using in the endpoints
+
 
 def get_db_engine(bulk: bool = True) -> Engine:
     try:
@@ -49,10 +53,16 @@ def get_book(body: dict):
         yield book
     finally:
         book.close()
-
-# This is the type annotation that we're using in the endpoints
+        
 Book = Annotated[xw.Book, Depends(get_book)]
 
+@app.post("/settings") 
+async def get_b2_value(data: dict = Body(...)):
+    book = xw.Book(json=data)
+    settings_sheet = book.sheets["Settings"]
+    setting = settings_sheet["B2"].value
+    
+    print(setting)
 
 @app.post("/hello")
 async def hello(book: Book):
@@ -85,6 +95,7 @@ async def gs_yellow(book: Book):
         selected_range.color = "#FFFF00"
 
         print("Selected cells highlighted in yellow!")
+        
     except Exception as e:
         print(f"Error: {e}")
 
@@ -230,7 +241,6 @@ async def download_data(book: Book):
             f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
         
-
 @app.post("/sql_to_table")
 async def download_data(book: Book):
     try:
@@ -290,9 +300,8 @@ cors_app = CORSMiddleware(
 )
 
 
-
-
 if __name__ == "__main__":
     import uvicorn
-    
-    uvicorn.run("main:cors_app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:cors_app", host="0.0.0.0", port=8000, workers=2, reload=True)
+    # settings = get_settings_dict()
+    # print(settings)
