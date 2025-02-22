@@ -1,6 +1,7 @@
 from typing import Annotated
 from dotenv import load_dotenv
 import os
+import threading
 
 import xlwings as xw
 from fastapi import Depends, FastAPI, status, Body
@@ -58,10 +59,12 @@ Book = Annotated[xw.Book, Depends(get_book)]
 
 @app.post("/settings") 
 async def get_b2_value(data: dict = Body(...)):
+    print(1)
     book = xw.Book(json=data)
     settings_sheet = book.sheets["Settings"]
+    print(2)
     setting = settings_sheet["B2"].value
-    
+    print(3)
     print(setting)
 
 @app.post("/hello")
