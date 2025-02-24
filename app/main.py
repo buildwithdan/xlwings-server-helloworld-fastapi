@@ -96,12 +96,13 @@ async def get_journals(book: Book):
     settings = await get_settings(book)
     db_schema = settings.get("DatabaseSchema")
     db_view = settings.get("DatabaseVW_TB_Journals")
+    tb_date = settings.get("TB_Date")
     
     try:
         # Get the database engine using the book dependency.
         engine = await get_db_engine(book)
         with engine.connect() as connection:
-            query = f"SELECT * FROM {db_schema}.{db_view}"
+            query = f"SELECT * FROM {db_schema}.{db_view} WHERE JournalDate <= {tb_date}"
             df = pd.read_sql(query, connection)
 
         # Write the DataFrame to the "Journals" sheet starting at cell A1.
@@ -122,12 +123,13 @@ async def get_journals(book: Book):
     settings = await get_settings(book)
     db_schema = settings.get("DatabaseSchema")
     db_view = settings.get("DatabaseVW_TB_Journals_Offset")
+    tb_date = settings.get("TB_Date")
     
     try:
         # Get the database engine using the book dependency.
         engine = await get_db_engine(book)
         with engine.connect() as connection:
-            query = f"SELECT * FROM {db_schema}.{db_view}"
+            query = f"SELECT * FROM {db_schema}.{db_view} WHERE JournalDate <= {tb_date}"
             df = pd.read_sql(query, connection)
 
         # Write the DataFrame to the "Journals" sheet starting at cell A1.
