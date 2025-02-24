@@ -58,21 +58,6 @@ def get_book(body: dict):
         
 Book = Annotated[xw.Book, Depends(get_book)]
 
-
-@app.post("/settings")
-async def get_settings(book: Book):
-    settings_sheet = book.sheets["Settings"]
-    
-    # Extract keys from column A (starting at A2) and values from column B (starting at B2).
-    keys = settings_sheet.range("A2").expand("down").value
-    values = settings_sheet.range("B2").expand("down").value
-    
-    # Combine the keys and values into a dictionary.
-    settings = dict(zip(keys, values))
-    print(settings)
-    return settings 
-
-
 async def get_db_engine(book: Book, bulk: bool = True) -> Engine:
     # Retrieve settings from the workbook.
     settings = await get_settings(book)
@@ -91,7 +76,20 @@ async def get_db_engine(book: Book, bulk: bool = True) -> Engine:
         raise RuntimeError(f"Failed to create SQLAlchemy engine: {e}")
 
 
-@app.post("/get/journals")
+@app.post("/settings")
+async def get_settings(book: Book):
+    settings_sheet = book.sheets["Settings"]
+    
+    # Extract keys from column A (starting at A2) and values from column B (starting at B2).
+    keys = settings_sheet.range("A2").expand("down").value
+    values = settings_sheet.range("B2").expand("down").value
+    
+    # Combine the keys and values into a dictionary.
+    settings = dict(zip(keys, values))
+    print(settings)
+    return settings 
+
+@app.post("/update/journals")
 async def get_journals(book: Book):
     settings = await get_settings(book)
     db_schema = settings.get("DatabaseSchema")
@@ -103,6 +101,34 @@ async def get_journals(book: Book):
         engine = await get_db_engine(book)
         with engine.connect() as connection:
             query = f"SELECT * FROM {db_schema}.{db_view} WHERE JournalDate <= '{tb_date}'"
+            df = pd.read_sql(query, connection)
+
+        # Write the DataFrame to the "Journals" sheet starting at cell A1.
+        active_sheet = book.sheets["data"]
+        active_sheet.clear_contents()
+        active_sheet['A1'].value = df
+
+        # Return the book's JSON representation or any other response as needed.
+        return book.json()
+
+    except Exception as e:
+        return PlainTextResponse(
+            f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@app.post("/get/journals")
+async def get_journals(book: Book):
+    settings = await get_settings(book)
+    db_schema = settings.get("DatabaseSchema")
+    db_view = settings.get("DatabaseVW_TB_Journals")
+    tb_date = settings.get("TB_Date")
+    
+    try:
+        # Get the database engine using the book dependency.
+        engine = await get_db_engine(book)
+        with engine.connect() as connection:
+            query = f"SELECT JournalLineID, JournalNumber, JournalDate, SourceType, Description, Reference, contact_name, NetAmount, Mapping, Offset, JrnlURL FROM {db_schema}.{db_view} WHERE JournalDate <= '{tb_date}'"
             df = pd.read_sql(query, connection)
 
         # Write the DataFrame to the "Journals" sheet starting at cell A1.
