@@ -28,27 +28,28 @@ secret_key = os.getenv("XLWINGS_SECRET_KEY")
 
 # CONNECTION_STRING = f"mssql+pyodbc://{sql_user}:{sql_password}@{sql_server}/{sql_database}?driver=ODBC+Driver+17+for+SQL+Server"
 
-# This is the type annotation that we're using in the endpoints
+# This is the type annotation that we're using in the endpoint
 
-
-def get_db_engine(bulk: bool = True) -> Engine:
-    try:
-        con_str = URL.create(
-            "mssql+pyodbc",
-            username=sql_user,
-            password=sql_password,
-            host=sql_server,
-            port=sql_port,
-            database=sql_database,
-            query={"driver": "ODBC Driver 17 for SQL Server"}
-        )
-        return create_engine(con_str, echo=True)
-    except Exception as e:
-        raise RuntimeError(f"Failed to create SQLAlchemy engine: {e}")
+# OLD
+# def get_db_engine(bulk: bool = True) -> Engine:
+#     settings = await get_settings(book)
+#     try:
+#         con_str = URL.create(
+#             "mssql+pyodbc",
+#             username=sql_user,
+#             password=sql_password,
+#             host=sql_server,
+#             port=sql_port,
+#             database=sql_database,
+#             query={"driver": "ODBC Driver 17 for SQL Server"}
+#         )
+#         return create_engine(con_str, echo=True)
+#     except Exception as e:
+#         raise RuntimeError(f"Failed to create SQLAlchemy engine: {e}")
 
 
 def get_book(body: dict):
-    """Dependency that returns the calling book and cleans it up again"""
+    """Dependency that returns the calling book and cleans it up again."""
     book = xw.Book(json=body)
     try:
         yield book
@@ -57,15 +58,66 @@ def get_book(body: dict):
         
 Book = Annotated[xw.Book, Depends(get_book)]
 
-@app.post("/settings") 
-async def get_b2_value(data: dict = Body(...)):
-    print(1)
-    book = xw.Book(json=data)
+
+@app.post("/settings")
+async def get_settings(book: Book):
     settings_sheet = book.sheets["Settings"]
-    print(2)
-    setting = settings_sheet["B2"].value
-    print(3)
-    print(setting)
+    
+    # Extract keys from column A (starting at A2) and values from column B (starting at B2).
+    keys = settings_sheet.range("A2").expand("down").value
+    values = settings_sheet.range("B2").expand("down").value
+    
+    # Combine the keys and values into a dictionary.
+    settings = dict(zip(keys, values))
+    print(settings)
+    return settings 
+
+
+async def get_db_engine(book: Book, bulk: bool = True) -> Engine:
+    # Retrieve settings from the workbook.
+    settings = await get_settings(book)
+    try:
+        con_str = URL.create(
+            "mssql+pyodbc",
+            username=settings.get("DatabaseUsername"),
+            password=settings.get("DatabasePassword"),
+            host=settings.get("DatabaseHost"),
+            port=settings.get("DatabasePort"),
+            database=settings.get("DatabaseName"),
+            query={"driver": "ODBC Driver 17 for SQL Server"}
+        )
+        return create_engine(con_str, echo=True)
+    except Exception as e:
+        raise RuntimeError(f"Failed to create SQLAlchemy engine: {e}")
+
+
+@app.post("/get/journals")
+async def get_journals(book: Book):
+    settings = await get_settings(book)
+    db_schema = settings.get("DatabaseSchema")
+    db_view = settings.get("DatabaseVW_TB_Journals")
+    
+    try:
+        # Get the database engine using the book dependency.
+        engine = await get_db_engine(book)
+        with engine.connect() as connection:
+            query = f"SELECT * FROM {db_schema}.{db_view}"
+            df = pd.read_sql(query, connection)
+
+        # Write the DataFrame to the "Journals" sheet starting at cell A1.
+        active_sheet = book.sheets["Journals"]
+        active_sheet['A1'].value = df
+
+        # Return the book's JSON representation or any other response as needed.
+        return book.json()
+
+    except Exception as e:
+        return PlainTextResponse(
+            f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        
+        
+        
 
 @app.post("/hello")
 async def hello(book: Book):
@@ -194,27 +246,6 @@ async def clear_data(book: Book):
         print(error_message)
         return PlainTextResponse(error_message, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
-@app.post("/get/journals")
-async def download_data(book: Book):
-    try:
-        
-        # Fetch data from Azure SQL
-        engine = get_db_engine()
-        with engine.connect() as connection:
-            query = "SELECT * FROM xero_jointfinances.vw_TB_journals"
-            df = pd.read_sql(query, connection)
-
-        # Convert DataFrame to dictionary for API response
-        data = df.to_dict(orient="records")
-        
-        active_sheet = book.sheets.active
-        active_sheet['A1'].value = df
-        return book.json()
-
-    except Exception as e:
-        return PlainTextResponse(
-            f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
 
 
 @app.post("/select_range")
