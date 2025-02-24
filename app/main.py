@@ -11,22 +11,22 @@ from sqlalchemy import create_engine, Engine
 from sqlalchemy.engine import URL
 import pandas as pd
 
-
-
 app = FastAPI()
 
-# Load .env file..
-load_dotenv(override=True)  # Forces `.env` variables to overwrite existing ones.
+XLWINGS_LICENSE_KEY="noncommercial"
+XLWINGS_SECRET_KEY="aIHarFw2u3pbnmkF_PABfWrwGqgm2Rd_vFBq8zrm5AU="
+# # Load .env file..
+# load_dotenv(override=True)  # Forces `.env` variables to overwrite existing ones.
 
-# Access environment variables
-sql_server = os.getenv("SQL_SERVER")
-sql_database = os.getenv("SQL_DATABASE")
-sql_user = os.getenv("SQL_USER")
-sql_password = os.getenv("SQL_PASSWORD")
-sql_port = os.getenv("SQL_PORT")
-secret_key = os.getenv("XLWINGS_SECRET_KEY")
+# # Access environment variables
+# sql_server = os.getenv("SQL_SERVER")
+# sql_database = os.getenv("SQL_DATABASE")
+# sql_user = os.getenv("SQL_USER")
+# sql_password = os.getenv("SQL_PASSWORD")
+# sql_port = os.getenv("SQL_PORT")
+# secret_key = os.getenv("XLWINGS_SECRET_KEY")
 
-# CONNECTION_STRING = f"mssql+pyodbc://{sql_user}:{sql_password}@{sql_server}/{sql_database}?driver=ODBC+Driver+17+for+SQL+Server"
+# # CONNECTION_STRING = f"mssql+pyodbc://{sql_user}:{sql_password}@{sql_server}/{sql_database}?driver=ODBC+Driver+17+for+SQL+Server"
 
 # This is the type annotation that we're using in the endpoint
 
@@ -60,7 +60,7 @@ Book = Annotated[xw.Book, Depends(get_book)]
 
 async def get_db_engine(book: Book, bulk: bool = True) -> Engine:
     # Retrieve settings from the workbook.
-    settings = await get_settings(book)
+    settings = await get_book_settings(book)
     try:
         con_str = URL.create(
             "mssql+pyodbc",
@@ -75,51 +75,35 @@ async def get_db_engine(book: Book, bulk: bool = True) -> Engine:
     except Exception as e:
         raise RuntimeError(f"Failed to create SQLAlchemy engine: {e}")
 
-
-@app.post("/settings")
-async def get_settings(book: Book):
-    settings_sheet = book.sheets["Settings"]
+@app.post("/get/book_settings")
+async def get_book_settings(book: Book):
+    b_settings = book.sheets["Settings"]
     
     # Extract keys from column A (starting at A2) and values from column B (starting at B2).
-    keys = settings_sheet.range("A2").expand("down").value
-    values = settings_sheet.range("B2").expand("down").value
+    keys = b_settings.range("A2").expand("down").value
+    values = b_settings.range("B2").expand("down").value
     
     # Combine the keys and values into a dictionary.
     settings = dict(zip(keys, values))
-    print(settings)
+    # print(settings)
     return settings 
 
-@app.post("/update/journals")
-async def get_journals(book: Book):
-    settings = await get_settings(book)
-    db_schema = settings.get("DatabaseSchema")
-    db_view = settings.get("DatabaseVW_TB_Journals")
-    tb_date = settings.get("TB_Date")
+@app.post("/get/sheet_settings")
+async def get_sheet_settings(book: Book):
+    s_settings = book.sheets.active
+    # Extract keys from column A (starting at A2) and values from column B (starting at B2).
+    keys = s_settings.range("A1").expand("down").value
+    values = s_settings.range("B1").expand("down").value
     
-    try:
-        # Get the database engine using the book dependency.
-        engine = await get_db_engine(book)
-        with engine.connect() as connection:
-            query = f"SELECT * FROM {db_schema}.{db_view} WHERE JournalDate <= '{tb_date}'"
-            df = pd.read_sql(query, connection)
-
-        # Write the DataFrame to the "Journals" sheet starting at cell A1.
-        active_sheet = book.sheets["data"]
-        active_sheet.clear_contents()
-        active_sheet['A1'].value = df
-
-        # Return the book's JSON representation or any other response as needed.
-        return book.json()
-
-    except Exception as e:
-        return PlainTextResponse(
-            f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+    # Combine the keys and values into a dictionary.
+    settings = dict(zip(keys, values))
+    # print(settings)
+    return settings 
 
 
 @app.post("/get/journals")
 async def get_journals(book: Book):
-    settings = await get_settings(book)
+    settings = await get_book_settings(book)
     db_schema = settings.get("DatabaseSchema")
     db_view = settings.get("DatabaseVW_TB_Journals")
     tb_date = settings.get("TB_Date")
@@ -144,10 +128,48 @@ async def get_journals(book: Book):
             f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
         
+@app.post("/get/journals/sheet")
+async def get_journals_sheet(book: Book):
+    try:
+        settings = await get_book_settings(book)
+        db_schema = settings.get("DatabaseSchema")
+        db_view = settings.get("DatabaseVW_TB_Journals")
+        tb_date = settings.get("TB_Date")
         
+        sheet_settings = await get_sheet_settings(book)
+        account_id = sheet_settings.get("account_id")
+        
+        # Get the database engine using the book dependency.
+        engine = await get_db_engine(book)
+        with engine.connect() as connection:
+            query = f"""
+                SELECT JournalLineID, JournalNumber, JournalDate, SourceType, Description, Reference, Contact, NetAmount, Mapping, Offset, JrnlURL 
+                FROM {db_schema}.{db_view} 
+                WHERE AccountID = '{account_id}' AND JournalDate <= '{tb_date}'
+            """
+            df = pd.read_sql(query, connection)
+            df.sort_values(by="JournalDate", ascending=True, inplace=True)
+
+        # Write the DataFrame to the "Journals" sheet starting at the specified cell.
+        active_sheet = book.sheets.active
+        
+        input_cell = sheet_settings.get("input_cell")  # Default to A1 if input_cell is not specified
+        # clear the range from input cell, to the right and down
+        active_sheet[input_cell].expand("table").clear_contents()
+        
+        active_sheet[input_cell].options(index=False, header=False).value = df
+
+        # Return the book's JSON representation or any other response as needed.
+        return book.json()
+
+    except Exception as e:
+        return PlainTextResponse(
+            f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
 @app.post("/get/journals_offset")
 async def get_journals(book: Book):
-    settings = await get_settings(book)
+    settings = await get_book_settings(book)
     db_schema = settings.get("DatabaseSchema")
     db_view = settings.get("DatabaseVW_TB_Journals_Offset")
     tb_date = settings.get("TB_Date")
@@ -171,22 +193,6 @@ async def get_journals(book: Book):
             f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
              
-
-@app.post("/hello")
-async def hello(book: Book):
-    """If you're using FastAPI < 0.95.0, you have to replace the function signature
-    like so: async def hello(book: xw.Book = Depends(get_book))
-    """
-    sheet = book.sheets[0]
-    cell = sheet["A1"]
-    if cell.value == "Hello xlwings!":
-        cell.value = "Suck it, xlwings!"
-    else:
-        cell.value = "Hello xlwings!"
-
-    # Return the following response
-    return book.json()
-
 @app.post("/yellow")
 async def gs_yellow(book: Book):
     """
@@ -273,8 +279,6 @@ def upsert_to_azure(df, table_name, primary_key):
 
     print(f"Upsert operation completed successfully on table '{table_name}'.")
 
-# Example usage
-
 @app.post("/clear")
 async def clear_data(book: Book):
     try:
@@ -299,8 +303,6 @@ async def clear_data(book: Book):
         print(error_message)
         return PlainTextResponse(error_message, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
-
-
 @app.post("/select_range")
 async def download_data(book: Book):
     active_sheet = book.sheets.active
@@ -368,8 +370,7 @@ async def download_data(book: Book):
         return PlainTextResponse(
             f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )   
-        
-        
+          
 @app.exception_handler(Exception)
 async def exception_handler(request, exception):
     # Handle all exceptions
@@ -390,5 +391,3 @@ cors_app = CORSMiddleware(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:cors_app", host="0.0.0.0", port=7999, workers=2, reload=True)
-    # settings = get_settings_dict()
-    # print(settings)
