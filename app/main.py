@@ -107,6 +107,7 @@ async def get_journals(book: Book):
 
         # Write the DataFrame to the "Journals" sheet starting at cell A1.
         active_sheet = book.sheets["data"]
+        active_sheet.clear_contents()
         active_sheet['A1'].value = df
 
         # Return the book's JSON representation or any other response as needed.
