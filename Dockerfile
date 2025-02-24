@@ -19,7 +19,7 @@ COPY ./app /app
 EXPOSE 8000
 
 CMD ["gunicorn", "app.main:cors_app", \
-     "--bind", "0.0.0.0:8000", \
+     "--bind", "0.0.0.0:7999", \
      "--access-logfile", "-", \
      "--workers", "2", \
      "--worker-class", "uvicorn.workers.UvicornWorker"]
