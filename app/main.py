@@ -105,7 +105,7 @@ async def get_journals(book: Book):
             df = pd.read_sql(query, connection)
 
         # Write the DataFrame to the "Journals" sheet starting at cell A1.
-        active_sheet = book.sheets["Journals"]
+        active_sheet = book.sheets["data"]
         active_sheet['A1'].value = df
 
         # Return the book's JSON representation or any other response as needed.
@@ -117,7 +117,31 @@ async def get_journals(book: Book):
         )
         
         
-        
+@app.post("/get/journals_offset")
+async def get_journals(book: Book):
+    settings = await get_settings(book)
+    db_schema = settings.get("DatabaseSchema")
+    db_view = settings.get("DatabaseVW_TB_Journals_Offset")
+    
+    try:
+        # Get the database engine using the book dependency.
+        engine = await get_db_engine(book)
+        with engine.connect() as connection:
+            query = f"SELECT * FROM {db_schema}.{db_view}"
+            df = pd.read_sql(query, connection)
+
+        # Write the DataFrame to the "Journals" sheet starting at cell A1.
+        active_sheet = book.sheets["data_offset"]
+        active_sheet['A1'].value = df
+
+        # Return the book's JSON representation or any other response as needed.
+        return book.json()
+
+    except Exception as e:
+        return PlainTextResponse(
+            f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+             
 
 @app.post("/hello")
 async def hello(book: Book):
