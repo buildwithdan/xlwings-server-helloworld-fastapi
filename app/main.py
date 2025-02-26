@@ -158,7 +158,7 @@ async def get_journals_sheet(book: Book):
         input_cell = sheet_settings.get("input_cell")  # Default to A1 if input_cell is not specified
         
         # clear the range from input cell, to the right and down, only up to column S, and not column T.
-        active_sheet[input_cell].expand("table").clear_contents()
+        active_sheet[header_cell].expand("right").expand("down").clear_contents()
         
         active_sheet[input_cell].options(index=False, header=False).value = df
 
@@ -222,7 +222,7 @@ async def update_mapping_journals(book: Book):
         active_sheet = book.sheets.active
 
         # Expand the range: first to the right then down from header_cell
-        data_range = active_sheet[header_cell].expand("right").expand("down")
+        data_range = active_sheet[header_cell].expand("right").expand("down").clear_contents()
         
         # Read data into a DataFrame, treating the first row as header and not using the first column as an index.
         df = data_range.options(pd.DataFrame, header=True, index=False).value
