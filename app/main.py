@@ -155,12 +155,12 @@ async def get_journals_sheet(book: Book):
         # Write the DataFrame to the "Journals" sheet starting at the specified cell.
         active_sheet = book.sheets.active
         
-        input_cell = sheet_settings.get("input_cell")  # Default to A1 if input_cell is not specified
+        header_cell = sheet_settings.get("header_cell")  # Default to A1 if input_cell is not specified
         
         # clear the range from input cell, to the right and down, only up to column S, and not column T.
         active_sheet[header_cell].expand("right").expand("down").clear_contents()
         
-        active_sheet[input_cell].options(index=False, header=False).value = df
+        active_sheet[header_cell].options(index=False, header=True).value = df
 
         # Return the book's JSON representation or any other response as needed.
         return book.json()
@@ -222,19 +222,18 @@ async def update_mapping_journals(book: Book):
         active_sheet = book.sheets.active
 
         # Expand the range: first to the right then down from header_cell
-        data_range = active_sheet[header_cell].expand("right").expand("down").clear_contents()
+        data_range = active_sheet[header_cell].expand("right").expand("down")
         
         # Read data into a DataFrame, treating the first row as header and not using the first column as an index.
         df = data_range.options(pd.DataFrame, header=True, index=False).value
-        
-        # Debug: print the DataFrame columns to verify the headers
-        print("DataFrame columns:", df.columns)
+        print(df.head())
         
         # 3. Filter rows that have a non-null value in either Mapping or Offset.
         df = df[(df["Mapping"].notnull()) | (df["Offset"].notnull())]
 
         # 4. Keep only the columns needed for the upsert.
         df = df[["JournalLineID", "Mapping", "Offset"]]
+        
         print("Filtered DataFrame head:", df.head())
 
         # Helper function to convert Offset value to binary (1 or 0)
