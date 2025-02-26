@@ -2,12 +2,12 @@ from typing import Annotated
 from dotenv import load_dotenv
 import os
 import threading
-
+import requests, json, httpx
 import xlwings as xw
 from fastapi import Depends, FastAPI, status, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import create_engine, Engine
+from sqlalchemy import create_engine, Engine, text
 from sqlalchemy.engine import URL
 import pandas as pd
 
@@ -101,6 +101,8 @@ async def get_sheet_settings(book: Book):
     return settings 
 
 
+
+
 @app.post("/get/journals")
 async def get_journals(book: Book):
     settings = await get_book_settings(book)
@@ -148,13 +150,14 @@ async def get_journals_sheet(book: Book):
                 WHERE AccountID = '{account_id}' AND JournalDate <= '{tb_date}'
             """
             df = pd.read_sql(query, connection)
-            df.sort_values(by="JournalDate", ascending=True, inplace=True)
+            df.sort_values(by=["JournalDate","JournalNumber"], ascending=True, inplace=True)
 
         # Write the DataFrame to the "Journals" sheet starting at the specified cell.
         active_sheet = book.sheets.active
         
         input_cell = sheet_settings.get("input_cell")  # Default to A1 if input_cell is not specified
-        # clear the range from input cell, to the right and down
+        
+        # clear the range from input cell, to the right and down, only up to column S, and not column T.
         active_sheet[input_cell].expand("table").clear_contents()
         
         active_sheet[input_cell].options(index=False, header=False).value = df
@@ -180,6 +183,7 @@ async def get_journals(book: Book):
         with engine.connect() as connection:
             query = f"SELECT * FROM {db_schema}.{db_view} WHERE JournalDate <= '{tb_date}'"
             df = pd.read_sql(query, connection)
+            df.sort_values(by=["ModifiedDate"], ascending=True, inplace=True)
 
         # Write the DataFrame to the "Journals" sheet starting at cell A1.
         active_sheet = book.sheets["data_offset"]
@@ -193,6 +197,114 @@ async def get_journals(book: Book):
             f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
              
+@app.post("/update/mapping_journals")
+async def update_mapping_journals(book: Book):
+    """
+    Reads Mapping/Offset columns from the sheet, then inserts or updates
+    them into the 'mapping_journals' table using the columns found in sheet_settings.
+    Only rows with a non-null value in Mapping or Offset are processed.
+    If the JournalLineID already exists, it updates that record; otherwise, it inserts a new one.
+    
+    Note:
+    - Offset in the DB is a binary field (1 or 0).
+    - JournalLineID and Mapping are text fields.
+    """
+    try:
+        # 1. Get high-level settings (schema, table name, etc.)
+        settings = await get_book_settings(book)
+        db_schema = settings.get("DatabaseSchema")
+        db_table = settings.get("DatabaseMappingJournals")  # e.g. "mapping_journals"
+
+        # 2. Get sheet-specific settings
+        sheet_settings = await get_sheet_settings(book)
+        header_cell = sheet_settings.get("header_cell")  # e.g. "A1" (where headers start)
+
+        active_sheet = book.sheets.active
+
+        # Expand the range: first to the right then down from header_cell
+        data_range = active_sheet[header_cell].expand("right").expand("down")
+        
+        # Read data into a DataFrame, treating the first row as header and not using the first column as an index.
+        df = data_range.options(pd.DataFrame, header=True, index=False).value
+        
+        # Debug: print the DataFrame columns to verify the headers
+        print("DataFrame columns:", df.columns)
+        
+        # 3. Filter rows that have a non-null value in either Mapping or Offset.
+        df = df[(df["Mapping"].notnull()) | (df["Offset"].notnull())]
+
+        # 4. Keep only the columns needed for the upsert.
+        df = df[["JournalLineID", "Mapping", "Offset"]]
+        print("Filtered DataFrame head:", df.head())
+
+        # Helper function to convert Offset value to binary (1 or 0)
+        def convert_to_binary(val):
+            if pd.isnull(val):
+                return 0
+            if isinstance(val, bool):
+                return 1 if val else 0
+            if isinstance(val, (int, float)):
+                return 1 if val != 0 else 0
+            if isinstance(val, str):
+                return 1 if val.strip().lower() in ['1', 'true', 'yes'] else 0
+            return 0
+
+        # 5. Perform upsert in the DB table using JournalLineID as the key.
+        engine = await get_db_engine(book)
+        with engine.begin() as connection:
+            for _, row in df.iterrows():
+                journal_line_id = row["JournalLineID"]
+                mapping_value = row["Mapping"]
+                # Convert NaN mapping_value to an empty string
+                if pd.isnull(mapping_value):
+                    mapping_value = ""
+                offset_value = convert_to_binary(row["Offset"])
+
+                # Try to update the record if JournalLineID exists.
+                update_sql = f"""
+                    UPDATE {db_schema}.{db_table}
+                       SET Mapping = :mapping,
+                           Offset = :offset,
+                           ModifiedDate = GETUTCDATE()
+                     WHERE JournalLineID = :jlid
+                """
+                result = connection.execute(
+                    text(update_sql),
+                    {
+                        "mapping": mapping_value,
+                        "offset": offset_value,
+                        "jlid": journal_line_id,
+                    }
+                )
+
+                # If no rows were updated, then insert a new record.
+                if result.rowcount == 0:
+                    insert_sql = f"""
+                        INSERT INTO {db_schema}.{db_table} 
+                           (JournalLineID, Mapping, Offset, ModifiedDate)
+                             VALUES (:jlid, :mapping, :offset, GETUTCDATE())
+                    """
+                    connection.execute(
+                        text(insert_sql),
+                        {
+                            "jlid": journal_line_id,
+                            "mapping": mapping_value,
+                            "offset": offset_value,
+                        }
+                    )
+             
+        # return {"message": "Successfully inserted/updated mapping_journals data."}
+    
+    except Exception as e:
+        return PlainTextResponse(
+            f"Error updating mapping_journals: {e}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+
+
+
 @app.post("/yellow")
 async def gs_yellow(book: Book):
     """
@@ -216,161 +328,90 @@ async def gs_yellow(book: Book):
     # Return the following response
     return book.json()
 
-@app.post("/upload_data")
-async def upload_data(book: Book):
-    """
-    Endpoint to upload data from an Excel table to Azure SQL.
-    """
+@app.post("/sync/fivetran")
+async def fivetran_start_sync(book: Book):
+  
     try:
-        # Get data from the first sheet
-        sheet = book.sheets[0]
-        df = sheet["A1"].expand().options(pd.DataFrame).value
-
-        # Validate DataFrame
-        if df.empty:
-            return {"message": "No data found in the sheet to upload"}
-
-        # Save data to Azure SQL
-        engine = get_db_engine()
-        with engine.connect() as connection:
-            df.to_sql("your_table_name", connection, if_exists="replace", index=False)
-
-        return {"message": "Data uploaded successfully!"}
-    except Exception as e:
-        return PlainTextResponse(
-            f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-
-@app.post("/upsert_azure")       
-def upsert_to_azure(df, table_name, primary_key):
-    """
-    Upserts a pandas DataFrame to an Azure SQL Database using a MERGE statement.
-
-    :param df: pandas DataFrame to upsert
-    :param table_name: Target table in Azure SQL Database
-    :param primary_key: The primary key column of the target table
-    """
-    engine = get_engine_db()
-
-    with engine.connect() as connection:
-        # Step 1: Write DataFrame to a temporary table
-        temp_table_name = "temp_table"
-        df.to_sql(temp_table_name, connection, if_exists="replace", index=False)
-
-        # Step 2: Perform the MERGE operation
-        merge_query = f"""
-        MERGE INTO {table_name} AS target
-        USING (SELECT * FROM {temp_table_name}) AS source
-        ON target.{primary_key} = source.{primary_key}
-        WHEN MATCHED THEN
-            UPDATE SET 
-                {', '.join([f"{col} = source.{col}" for col in df.columns if col != primary_key])}
-        WHEN NOT MATCHED THEN
-            INSERT ({', '.join(df.columns)})
-            VALUES ({', '.join([f"source.{col}" for col in df.columns])});
-        """
-
-        # Execute the MERGE query
-        connection.execute(text(merge_query))
-
-        # Step 3: Drop the temporary table
-        drop_temp_table_query = f"DROP TABLE {temp_table_name}"
-        connection.execute(text(drop_temp_table_query))
-
-    print(f"Upsert operation completed successfully on table '{table_name}'.")
-
-@app.post("/clear")
-async def clear_data(book: Book):
-    try:
-        # Access the active sheet
-        active_sheet = book.sheets.active
-        
-        # Debugging statements
-        print("Book object:", book)
-        print("Active sheet:", active_sheet.name)
-
-        # Validate the range and clear it
-        range_to_clear = active_sheet.range("A5:ZZ1000")
-        print("Range to clear:", range_to_clear.address)
-        range_to_clear.clear_contents()
-        
-        print("Range cleared successfully.")
-        return book.json()
-
-    except Exception as e:
-        # Detailed error message for debugging
-        error_message = f"Error clearing data: {e}"
-        print(error_message)
-        return PlainTextResponse(error_message, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        settings = await get_book_settings(book)
+        connector_id = settings.get("FivetranConnectorID")
+        base64_key = settings.get("FivetranBase64APIkey")
     
-@app.post("/select_range")
-async def download_data(book: Book):
-    active_sheet = book.sheets.active
-    print(active_sheet.range)
-
-@app.post("/sheet_to_sql")
-async def download_data(book: Book):
-    try:
-        
-        # Fetch data from Azure SQL
-        engine = get_db_engine()
-        with engine.connect() as connection:
-            query = "SELECT * FROM xero_jointfinances.vw_accounts"
-            df = pd.read_sql(query, connection)
-
-        # Convert DataFrame to dictionary for API response
-        data = df.to_dict(orient="records")
-        
-        active_sheet = book.sheets.active
-        active_sheet['A5'].value = df
-        return book.json()
-
-    except Exception as e:
-        return PlainTextResponse(
-            f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-        
-@app.post("/sql_to_table")
-async def download_data(book: Book):
-    try:
-        # Fetch data from Azure SQL
-        engine = get_db_engine()
-        with engine.connect() as connection:
-            query = "SELECT * FROM xero_jointfinances.vw_accounts"
-            df = pd.read_sql(query, connection)
-
-        # Validate DataFrame
-        if df.empty:
-            raise ValueError("DataFrame is empty. Cannot populate Google Sheets table.")
-
-        # Define range parameters
-        start_row = 4  # Zero-based row for cell A5 (row 5 in human terms)
-        start_column = 0  # Zero-based column for cell A5 (column A in human terms)
-        row_count = df.shape[0]
-        column_count = df.shape[1]
-
-        # Create payload for Google Apps Script
-        action = {
-            "func": "addTable",
-            "args": ["$A$5", True, "TableStyleMedium2", "DataTable"],
-            "values": df.values.tolist(),  # Convert DataFrame to list of lists
-            "sheet_position": book.sheets.active.index,
-            "start_row": start_row,
-            "start_column": start_column,
-            "row_count": row_count,
-            "column_count": column_count,
+        # Endpoint for triggering sync. (Ensure this matches Fivetran's docs.)
+        url = f"https://api.fivetran.com/v1/connectors/{connector_id}/sync"
+    
+        payload = {"force": False}
+    
+        headers = {
+            "Accept": "application/json;version=2",
+            "Authorization": f"Basic {base64_key}",
+            "Content-Type": "application/json"
         }
+        
+        
+        # Synchronous GET request using the requests module.
+        response = requests.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        print(f"Error fetching connector sync: {exc}")
+        return {"error": str(exc)}
+    
+    response_data = response.json()
+    print(response_data)
+    
+    # Extract the sync state.
+    sync_state = response_data.get("code", "unknown")
+    if sync_state == "Success":
+        sync_state = "Syncing"
+    else:
+        sync_state = "Not Syncing"
+  
+    # Update cell H4 in the "Main_Summary" sheet.
+    sheet = book.sheets["Main_Summary"]
+    sheet["G4"].value = sync_state
 
-        print("Payload:", action)  # Debugging log
+    return book.json()
 
-        # Pass the payload to Google Apps Script
-        return book.json()
 
-    except Exception as e:
-        return PlainTextResponse(
-            f"Error: {e}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )   
-          
+@app.post("/status/fivetran")
+async def fivetran_status(book: Book):
+    """
+    Fetches the Fivetran connector details and returns only the sync status.
+    """
+    settings = await get_book_settings(book)
+    connector_id = settings.get("FivetranConnectorID")
+    base64_key = settings.get("FivetranBase64APIkey")  # Should be Base64 encoded "api_key:api_secret"
+    
+    # Use the connectors endpoint per the Fivetran API docs.
+    url = f"https://api.fivetran.com/v1/connectors/{connector_id}"
+    
+    headers = {
+        "Accept": "application/json;version=2",
+        "Authorization": f"Basic {base64_key}"
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()  # Raise for any HTTP errors.
+    except httpx.HTTPError as exc:
+        print(f"Error fetching connector state: {exc}")
+        return {"error": str(exc)}
+    
+    # Extract the sync state from the JSON response.
+    response_data = response.json()
+    sync_state = response_data.get("data", {}).get("status", {}).get("sync_state", "unknown")
+    if sync_state == "scheduled":
+        sync_state = "Not Syncing"
+    else:
+        sync_state = "Syncing"
+    
+    print(sync_state)
+    
+    sheet = book.sheets["Main_Summary"]
+    sheet["G4"].value = sync_state
+
+    return book.json()
+
 @app.exception_handler(Exception)
 async def exception_handler(request, exception):
     # Handle all exceptions
